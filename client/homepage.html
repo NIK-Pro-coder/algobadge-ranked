@@ -1,0 +1,44 @@
+<head>
+	<link rel="stylesheet" href="homepage.css" />
+</head>
+<body>
+	<h1>Hello</h1>
+
+	<form id="register" accept-charset="utf-8">
+		<p>Register</p>
+
+		<label for="register-uname">Username</label>
+		<input type="text" id="register-uname" />
+
+		<br />
+
+		<label for="register-pass">Password</label>
+		<input type="password" id="register-pass" />
+
+		<br />
+
+		<button type="button" onclick="attemptRegister()">Register</button>
+
+		<p id="register-error" class="error"></p>
+	</form>
+
+	<form id="login" accept-charset="utf-8">
+		<p>Login</p>
+
+		<label for="login-uname">Username</label>
+		<input type="text" id="login-uname" />
+
+		<br />
+
+		<label for="login-pass">Password</label>
+		<input type="password" id="login-pass" />
+
+		<br />
+
+		<button type="button" onclick="attemptLogin()">Log in</button>
+
+		<p id="login-error" class="error"></p>
+	</form>
+
+	<script src="homepage.js"></script>
+</body>
