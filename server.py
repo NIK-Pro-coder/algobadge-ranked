@@ -352,8 +352,6 @@ if __name__ == "__main__":
 
 	exposeFileGet("client/personal.html", override_path="/", required_perms=[TokenPermissions.AccessPrivate], fallback="/login")
 
-	exposeFuncGet("/userinfo", getUserInfo, required_perms=[TokenPermissions.AccessPrivate])
-
 	exposeFuncPost("/register", registerUser)
 	exposeFuncPost("/login", loginUser)
 
