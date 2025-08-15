@@ -21,7 +21,11 @@ ALLOWEDCHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 STRINGLEN = 10
 
 ## Passwords
-SALT = os.getenv("SALT")
+SALT_STR = os.getenv("SALT")
+if SALT_STR == None :
+	print("'SALT' env variable not found")
+	exit(1)
+SALT = int(SALT_STR)
 
 class Response:
 	def __init__(self) -> None:
