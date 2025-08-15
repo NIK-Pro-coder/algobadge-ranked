@@ -1,3 +1,22 @@
 .error {
 	background-color: red;
 }
+
+#forms {
+	display: flex;
+	flex-direction: row;
+
+	justify-content: space-around;
+}
+
+form {
+	border: 2px solid gray;
+	padding: 5px;
+	border-radius: 5px;
+
+	display: flex;
+	flex-direction: column;
+
+	align-items: center;
+	justify-content: space-around;
+}

@@ -4,41 +4,43 @@
 <body>
 	<h1>Hello</h1>
 
-	<form id="register" accept-charset="utf-8">
-		<p>Register</p>
+	<div id="forms">
+		<form id="register" accept-charset="utf-8">
+			<p>Register</p>
 
-		<label for="register-uname">Username</label>
-		<input type="text" id="register-uname" />
+			<label for="register-uname">Username</label>
+			<input type="text" id="register-uname" />
 
-		<br />
+			<br />
 
-		<label for="register-pass">Password</label>
-		<input type="password" id="register-pass" />
+			<label for="register-pass">Password</label>
+			<input type="password" id="register-pass" />
 
-		<br />
+			<br />
 
-		<button type="button" onclick="attemptRegister()">Register</button>
+			<button type="button" onclick="attemptRegister()">Register</button>
 
-		<p id="register-error" class="error"></p>
-	</form>
+			<p id="register-error" class="error"></p>
+		</form>
 
-	<form id="login" accept-charset="utf-8">
-		<p>Login</p>
+		<form id="login" accept-charset="utf-8">
+			<p>Login</p>
 
-		<label for="login-uname">Username</label>
-		<input type="text" id="login-uname" />
+			<label for="login-uname">Username</label>
+			<input type="text" id="login-uname" />
 
-		<br />
+			<br />
 
-		<label for="login-pass">Password</label>
-		<input type="password" id="login-pass" />
+			<label for="login-pass">Password</label>
+			<input type="password" id="login-pass" />
 
-		<br />
+			<br />
 
-		<button type="button" onclick="attemptLogin()">Log in</button>
+			<button type="button" onclick="attemptLogin()">Log in</button>
 
-		<p id="login-error" class="error"></p>
-	</form>
+			<p id="login-error" class="error"></p>
+		</form>
+	</div>
 
 	<script src="homepage.js"></script>
 </body>

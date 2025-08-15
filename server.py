@@ -7,6 +7,10 @@ from random import choice
 import os
 import time
 import json
+import hashlib
+import dotenv
+
+dotenv.load_dotenv()
 
 hostName = "localhost"
 serverPort = 8080
@@ -15,6 +19,9 @@ serverPort = 8080
 EXPIRYTIME = 60 * 60 * 24 * 7 * 3 # 3 weeks in seconds
 ALLOWEDCHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 STRINGLEN = 10
+
+## Passwords
+SALT = os.getenv("SALT")
 
 class Response:
 	def __init__(self) -> None:
@@ -72,14 +79,45 @@ def getTokenString() :
 
 	return s
 
+class Ranks(Enum) :
+	Bronze = 0
+	Silver = 1
+	Gold = 2
+	Diamond = 3
+	Ruby = 4
+	Emerald = 5
+	Master = 6
+
 class User :
 	def __init__(self, name: str, passw: str) -> None:
 		self.name = name
-		self.passw = passw
+		self.display = name
+		self.passw =  hashlib.sha256(passw.encode()+(SALT).to_bytes(), usedforsecurity=True).hexdigest()
 
 		self.uid = len(users)
 
+		self.points = 0
+		self.rank = Ranks.Bronze
+
 		users.append(self)
+
+	def dumpJson(self) :
+		return {
+			"name": self.name,
+			"display": self.display,
+			"passw": self.passw,
+			"uid": self.uid,
+			"points": self.points,
+			"rank": self.rank.name
+		}
+
+	def loadJson(self, json: dict) :
+		self.name = json["name"]
+		self.display = json["display"]
+		self.passw = json["passw"]
+		self.uid = json["uid"]
+		self.points = json["points"]
+		self.rank = [x for x in Ranks if x.name == json["rank"]][0]
 
 class Token :
 	def __init__(self, user: User) -> None:
@@ -253,6 +291,11 @@ def registerUser(body: dict) -> Response :
 
 	u = User(body["uname"], body["pass"])
 
+	with open("users.json", "w") as f :
+		json.dump([
+			x.dumpJson() for x in users
+		], f)
+
 	return Response.Success()
 
 def loginUser(body: dict) -> Response :
@@ -263,7 +306,7 @@ def loginUser(body: dict) -> Response :
 		return Response.BadRequest().write("Missing password")
 
 	for i in users :
-		if i.name == body["uname"] and i.passw == body["pass"] :
+		if i.name == body["uname"] and i.passw == hashlib.sha256(body["pass"].encode()+(SALT).to_bytes()).hexdigest() :
 			t = Token(i)
 			t.givePermission(TokenPermissions.AccessPrivate)
 
@@ -287,6 +330,15 @@ def getUserInfo(token: Token | None) :
 	return Response.Success().setType("application/json").write(json.dumps(body))
 
 if __name__ == "__main__":
+	print("Loading users...")
+
+	with open("users.json") as f :
+		temp_users = json.load(f)
+
+	for i in temp_users :
+		u = User("", "") # Temporary user
+		u.loadJson(i)
+
 	webServer = HTTPServer((hostName, serverPort), MyServer)
 	print("Server started http://%s:%s" % (hostName, serverPort))
 
