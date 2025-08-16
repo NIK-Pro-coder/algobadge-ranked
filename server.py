@@ -2,7 +2,9 @@ from ast import Call
 from collections.abc import Callable
 from enum import Enum
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from mimetypes import MimeTypes
 from random import choice
+from typing import Any, Iterable
 
 import os
 import time
@@ -123,6 +125,14 @@ class User :
 		self.points = json["points"]
 		self.rank = [x for x in Ranks if x.name == json["rank"]][0]
 
+	def dumpPublicInfo(self) :
+		return {
+			"name": self.name,
+			"display": self.display,
+			"points": self.points,
+			"rank": self.rank.name
+		}
+
 class Token :
 	def __init__(self, user: User) -> None:
 		self.permissions: list[TokenPermissions] = []
@@ -148,10 +158,11 @@ class Pageinfo :
 		self.perms = perms
 		self.fallback = fallback
 
-getPaths: dict[str, Pageinfo] = {}
-postPaths: dict[str, Callable[[dict], Response]] = {}
-
 class MyServer(BaseHTTPRequestHandler):
+	def __init__(self, request, client_address, server) -> None:
+		self.params: dict[str, str] = {}
+		super().__init__(request, client_address, server)
+
 	def sendResponse(self, resp: Response) :
 		self.send_response(resp.status_code)
 
@@ -204,58 +215,79 @@ class MyServer(BaseHTTPRequestHandler):
 
 		return None
 
-	def do_GET(self):
+	def captureParams(self, path: str) :
+		s_req = self.path.split("/")
+		s_path = path.split("/")
+
+		self.params = {}
+
+		for r,p in zip(s_req, s_path) :
+			if p.startswith(":") :
+				self.params[p.removeprefix(":")] = r
+
+	def matchPath(self, paths: Iterable[str]) :
+		split_path = self.path.split("/")
+
+		for i in paths :
+			s = i.split("/")
+
+			if len(split_path) != len(s) :
+				continue
+
+			if all(split_path[x] == s[x] or s[x].startswith(":") for x in range(len(split_path))) :
+				self.captureParams(i)
+
+				return i
+
+		return None
+
+	def handleRequest(self, paths: dict[str, Pageinfo]) :
+		path = self.matchPath(paths)
+
+		if path == None :
+			with open("notfound.html") as f :
+				content = f.read()
+
+			self.sendResponse(
+				Response.NotFound().setType("text/html").write(content)
+			)
+
+			return
+
 		token = self.getToken()
 
-		for i in getPaths :
-			if i == self.getPath() :
-				info = getPaths[i]
+		info = paths[path]
+		hasAccess = len(info.perms) == 0 or (token != None and all(token.hasPermission(x) for x in info.perms))
 
-				hasAccess = len(info.perms) == 0 or (token != None and all(token.hasPermission(x) for x in info.perms))
+		if not hasAccess :
+			if info.fallback :
+				r = Response.SeeOther().addHeader("Location", info.fallback)
 
-				if not hasAccess :
-					if info.fallback :
-						r = Response.SeeOther().addHeader("Location", info.fallback)
-
-						self.sendResponse(r)
-						return
-
-					with open("unauthorized.html") as f :
-						content = f.read()
-
-					self.sendResponse(Response.Unauthorized().setType("text/html").write(content))
-					return
-
-				argnum = info.resolver.__code__.co_argcount
-
-				if argnum == 1 :
-					self.sendResponse(info.resolver(token))
-				else :
-					self.sendResponse(info.resolver())
-
+				self.sendResponse(r)
 				return
 
-		with open("notfound.html") as f :
-			content = f.read()
+			with open("unauthorized.html") as f :
+				content = f.read()
 
-		self.sendResponse(
-			Response.NotFound().setType("text/html").write(content)
-		)
+			self.sendResponse(Response.Unauthorized().setType("text/html").write(content))
+			return
+
+		argnum = info.resolver.__code__.co_argcount
+
+		if argnum == 1 :
+			# Pass the reqeust to the resolver
+			self.sendResponse(info.resolver(self))
+		else :
+			self.sendResponse(info.resolver())
+
+	def do_GET(self):
+		self.handleRequest(getPaths)
 
 	def do_POST(self):
-		body = self.getBody()
+		self.handleRequest(postPaths)
 
-		for i in postPaths :
-			if i == self.getPath() :
-				self.sendResponse(postPaths[i](body))
-				return
-
-		with open("notfound.html") as f :
-			content = f.read()
-
-		self.sendResponse(
-			Response.NotFound().setType("text/html").write(content)
-		)
+getPaths: dict[str, Pageinfo] = {}
+postPaths: dict[str, Pageinfo] = {}
 
 def exposeFileGet(path: str, *, override_path: str | None = None, override_type: str | None = None, required_perms: list[TokenPermissions] = [], fallback: str | None = None) :
 	p = override_path if override_path != None else path
@@ -276,13 +308,15 @@ def exposeFileGet(path: str, *, override_path: str | None = None, override_type:
 def exposeFuncGet(path: str, func: Callable[..., Response], *, required_perms: list[TokenPermissions] = [], fallback: str | None = None) :
 	getPaths[path] = Pageinfo(func, required_perms, fallback)
 
-def exposeFuncPost(path: str, func: Callable[[dict], Response]) :
-	postPaths[path] = func
+def exposeFuncPost(path: str, func: Callable[..., Response], *, required_perms: list[TokenPermissions] = [], fallback: str | None = None) :
+	postPaths[path] = Pageinfo(func, required_perms, fallback)
 
 users: list[User] = []
 activeTokens: list[Token] = []
 
-def registerUser(body: dict) -> Response :
+def registerUser(req: MyServer) -> Response :
+	body = req.getBody()
+
 	if not "uname" in body or body["uname"] == "" :
 		return Response.BadRequest().write("Missing username")
 
@@ -302,7 +336,9 @@ def registerUser(body: dict) -> Response :
 
 	return Response.Success()
 
-def loginUser(body: dict) -> Response :
+def loginUser(req: MyServer) -> Response :
+	body = req.getBody()
+
 	if not "uname" in body or body["uname"] == "" :
 		return Response.BadRequest().write("Missing username")
 
@@ -310,7 +346,7 @@ def loginUser(body: dict) -> Response :
 		return Response.BadRequest().write("Missing password")
 
 	for i in users :
-		if i.name == body["uname"] and i.passw == hashlib.sha256(body["pass"].encode()+(SALT).to_bytes()).hexdigest() :
+		if i.name == body["uname"] and i.passw == hashlib.sha256(body["pass"].encode()+(SALT).to_bytes(), usedforsecurity=True).hexdigest() :
 			t = Token(i)
 			t.givePermission(TokenPermissions.AccessPrivate)
 
@@ -321,17 +357,163 @@ def loginUser(body: dict) -> Response :
 
 	return Response.BadRequest().write("Invalid credentials")
 
-def getUserInfo(token: Token | None) :
-	if token == None :
-		return Response.BadRequest()
+def traverseJson(obj: dict | list, path: str) :
+	where: list[int | str] = [""]
 
-	user = token.user
+	isint = False
 
-	body = {
-		"name": user.name
-	}
+	for i in path :
+		if i == "]" : continue
 
-	return Response.Success().setType("application/json").write(json.dumps(body))
+		if (i == "." or i == "[") and isint :
+			where[-1] = int(where[-1])
+			isint = False
+
+		if i == "." :
+			where.append("")
+		elif i == "[" :
+			isint = True
+			where.append("")
+		elif type(where[-1]) is str :
+			where[-1] += i
+
+	if isint :
+		where[-1] = int(where[-1])
+
+	n: Any = obj
+
+	try :
+		for i in where :
+			n = n[i]
+	except (IndexError, KeyError) :
+		return None
+
+	return n
+
+def findNth(haystack: str, needle: str, n: int):
+    start = haystack.find(needle)
+    while start >= 0 and n > 1:
+        start = haystack.find(needle, start+1)
+        n -= 1
+    return start
+
+def fillPattern(pattern: str, info: dict) :
+	n_pat = pattern.replace("\t", " ").replace("\n", " ")
+	s_pat = [x for x in n_pat.split(" ") if x]
+
+	if len(s_pat) >= 4 and s_pat[-4] == "for" :
+		l_space = findNth(n_pat, " ", n_pat.count(" ")-3)
+		rep = n_pat[:l_space].strip()
+
+		name = s_pat[-3]
+		inside = s_pat[-1]
+
+		over = traverseJson(info, inside)
+
+		val = ""
+
+		if not "," in name :
+			if not type(over) is list :
+				return ""
+
+			for i in over :
+				info[name] = i
+				val += fillTemplate(rep, info)
+		else :
+			k_name, v_name = name.split(",")[0],name.split(",")[1]
+
+			if not type(over) is dict :
+				return ""
+
+			for i in over :
+				info[k_name] = i
+				info[v_name] = over[i]
+				val += fillTemplate(rep, info)
+
+		return val
+
+	if len(s_pat) >= 2 and s_pat[-2] == "if" :
+		l_space = findNth(n_pat, " ", n_pat.count(" ")-1)
+		disp = n_pat[:l_space].strip()
+
+		name = s_pat[-1]
+		invert = name.startswith("!")
+
+		over = name.removeprefix("!") if invert else name
+
+		val = traverseJson(info, over)
+
+		if not type(val) is bool :
+			return ""
+
+		if val != invert :
+			return fillTemplate(disp, info)
+		else :
+			return ""
+
+	return traverseJson(info, n_pat)
+
+def fillTemplate(temp: str, info: dict) :
+	new = ""
+
+	chars = (x for x in temp)
+
+	try :
+		while True :
+			c = next(chars)
+
+			if c != "$" :
+				new += c
+				continue
+
+			nx = next(chars)
+
+			if nx != "{" :
+				new += nx
+				continue
+
+			depth = 1
+			pattern = ""
+
+			while depth > 0 :
+				n = next(chars)
+
+				pattern += n
+
+				if n == "{" : depth += 1
+				if n == "}" : depth -= 1
+
+			pattern = pattern.removesuffix("}").strip()
+
+			val = fillPattern(pattern, info)
+
+			new += str(val)
+
+	except StopIteration :
+		...
+
+	return new
+
+def profilePage(req: MyServer) :
+	userinfo = None
+
+	for i in users :
+		if i.name == req.params["username"] :
+			userinfo = i.dumpPublicInfo()
+			break
+
+	with open("client/profilepage.html") as f :
+		content = fillTemplate(f.read(), {
+			"user": userinfo,
+			"test": ["hi", "hello"],
+			"dict": {
+				"hi": "a",
+				"h": "ia"
+			},
+			"auth": False
+		})
+
+	return Response.Success().write(content)
 
 if __name__ == "__main__":
 	print("Loading users...")
@@ -351,6 +533,8 @@ if __name__ == "__main__":
 	exposeFileGet("client/homepage.css", override_path="/homepage.css", override_type="text/css")
 
 	exposeFileGet("client/personal.html", override_path="/", required_perms=[TokenPermissions.AccessPrivate], fallback="/login")
+
+	exposeFuncGet("/user/:username", profilePage)
 
 	exposeFuncPost("/register", registerUser)
 	exposeFuncPost("/login", loginUser)
