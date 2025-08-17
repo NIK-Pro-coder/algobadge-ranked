@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from mimetypes import MimeTypes
 from random import choice
 from typing import Any, Iterable
+from threading import Thread
 
 import os
 import time
@@ -14,7 +15,7 @@ import dotenv
 
 dotenv.load_dotenv()
 
-hostName = "localhost"
+hostName = "0.0.0.0"
 serverPort = 8080
 
 ## Cookie Stuff
@@ -28,6 +29,11 @@ if SALT_STR == None :
 	print("'SALT' env variable not found")
 	exit(1)
 SALT = int(SALT_STR)
+
+## Socket Server
+SOCKET_HOST = "0.0.0.0"
+SOCKET_PORT = 9090
+MAX_CONENCTED_SOCKET = 1000
 
 class Response:
 	def __init__(self) -> None:
@@ -504,16 +510,60 @@ def profilePage(req: MyServer) :
 
 	with open("client/profilepage.html") as f :
 		content = fillTemplate(f.read(), {
-			"user": userinfo,
-			"test": ["hi", "hello"],
-			"dict": {
-				"hi": "a",
-				"h": "ia"
-			},
-			"auth": False
+			"user": userinfo
 		})
 
 	return Response.Success().write(content)
+
+class SocketClient(Thread) :
+	def __init__(self, host: str, port: int) -> None:
+		super().__init__(
+			target=self.getConnection
+		)
+
+		self.host = host
+		self.port = port
+
+		self.running = True
+
+	def getConnection(self) :
+		pass
+
+	def stop(self) :
+		self.running = False
+
+class SocketServer(Thread) :
+	def __init__(self, host: str, port: int) -> None:
+		super().__init__(
+			target=self.awaitSockets
+		)
+
+		self.host = host
+		self.port = port
+
+		self.connected_num = 0
+		self.sockets: list[SocketClient] = []
+
+		self.running = True
+
+	def requestPort(self) :
+		if self.connected_num >= MAX_CONENCTED_SOCKET :
+			return None
+
+		c = SocketClient(self.host, self.port + self.connected_num)
+
+		self.connected_num += 1
+
+	def awaitSockets(self) :
+		while self.running :
+			pass
+
+		for i in self.sockets :
+			i.stop()
+			i.join()
+
+	def stop(self) :
+		self.running = False
 
 if __name__ == "__main__":
 	print("Loading users...")
@@ -526,7 +576,10 @@ if __name__ == "__main__":
 		u.loadJson(i)
 
 	webServer = HTTPServer((hostName, serverPort), MyServer)
-	print("Server started http://%s:%s" % (hostName, serverPort))
+	print("Web server started http://%s:%s" % (hostName, serverPort))
+	socketServer = SocketServer(SOCKET_HOST, SOCKET_PORT)
+	socketServer.start()
+	print("Socekt server started http://%s:%s" % (SOCKET_HOST, SOCKET_PORT))
 
 	exposeFileGet("client/homepage.html", override_path="/login")
 	exposeFileGet("client/homepage.js", override_path="/homepage.js", override_type="text/javascript")
@@ -542,7 +595,12 @@ if __name__ == "__main__":
 	try:
 		webServer.serve_forever()
 	except KeyboardInterrupt:
-		pass
+		print()
 
 	webServer.server_close()
-	print("Server stopped.")
+	print("Web server stopped.")
+	print("Stopping socket server")
+
+	socketServer.stop()
+	socketServer.join()
+	print("Socket server stopped")
