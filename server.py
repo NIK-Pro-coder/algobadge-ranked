@@ -12,6 +12,8 @@ import time
 import json
 import hashlib
 import dotenv
+import socket
+import base64
 
 dotenv.load_dotenv()
 
@@ -515,22 +517,130 @@ def profilePage(req: MyServer) :
 
 	return Response.Success().write(content)
 
+def websocket_handshake(conn):
+    headers = conn.recv(1024).decode()
+    key = ""
+    for line in headers.split("\r\n"):
+        if line.lower().startswith("sec-websocket-key"):
+            key = line.split(":", 1)[1].strip()
+            break
+    accept_val = base64.b64encode(
+        hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()
+    ).decode()
+    response = (
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        f"Sec-WebSocket-Accept: {accept_val}\r\n"
+        "\r\n"
+    )
+    conn.send(response.encode())
+
+def recv_ws_frame(conn):
+    # Get first two bytes
+    b1, b2 = conn.recv(2)
+    length = b2 & 0x7F
+    if length == 126:
+        length = int.from_bytes(conn.recv(2), "big")
+    elif length == 127:
+        length = int.from_bytes(conn.recv(8), "big")
+    mask = conn.recv(4)
+    data = conn.recv(length)
+    return bytes(b ^ mask[i % 4] for i, b in enumerate(data)).decode(errors="ignore")
+
+def send_ws_frame(conn, message):
+    payload = message.encode()
+    frame = bytearray([0x81])  # FIN + text
+    length = len(payload)
+    if length <= 125:
+        frame.append(length)
+    elif length <= 65535:
+        frame.append(126)
+        frame.extend(length.to_bytes(2, "big"))
+    else:
+        frame.append(127)
+        frame.extend(length.to_bytes(8, "big"))
+    frame.extend(payload)
+    conn.send(frame)
+
 class SocketClient(Thread) :
-	def __init__(self, host: str, port: int) -> None:
+	def __init__(self, host: str, port: int, user: User, *, on_msg: Callable[[str], None]) -> None:
 		super().__init__(
 			target=self.getConnection
 		)
+
+		self.start()
+
+		self.on_msg = on_msg
+
+		self.send_queue: list[str] = []
+
+		self.user = user
 
 		self.host = host
 		self.port = port
 
 		self.running = True
 
+		self.recvThread: Thread | None = None
+		self.sendThread: Thread | None = None
+
+		self.connection: socket.socket | None = None
+
+	def send(self, msg: str) :
+		self.send_queue.append(msg)
+
+	def sendMsgThread(self, conn: socket.socket) :
+		while self.running :
+			if len(self.send_queue) == 0 :
+				continue
+
+			m = self.send_queue.pop(0)
+
+			send_ws_frame(conn, m)
+
+	def recvMsgThread(self, conn: socket.socket) :
+		while self.running :
+			self.on_msg(recv_ws_frame(conn))
+
 	def getConnection(self) :
-		pass
+		print("Started new websocket")
+
+		with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+			s.bind((self.host, self.port))
+			s.listen()
+			s.settimeout(5)
+
+			try :
+				conn, addr = s.accept()
+			except socket.timeout :
+				print("Socket timed out!")
+				self.stop()
+				return
+
+			print(f"Connected to {repr(addr)}")
+
+			websocket_handshake(conn)
+
+			self.connection = conn
+
+			print("Start recvThread")
+			self.recvThread = Thread(target=self.recvMsgThread, args=(conn,))
+			self.recvThread.start()
+
+			print("Start sendThread")
+			self.sendThread = Thread(target=self.sendMsgThread, args=(conn,))
+			self.sendThread.start()
 
 	def stop(self) :
 		self.running = False
+
+		if self.connection : self.connection.close()
+
+		print("Stopping send subthread")
+		if self.sendThread : self.sendThread.join()
+		print("Stopping recv subthread")
+		if self.recvThread : self.recvThread.join()
 
 class SocketServer(Thread) :
 	def __init__(self, host: str, port: int) -> None:
@@ -541,29 +651,55 @@ class SocketServer(Thread) :
 		self.host = host
 		self.port = port
 
-		self.connected_num = 0
 		self.sockets: list[SocketClient] = []
 
 		self.running = True
 
-	def requestPort(self) :
-		if self.connected_num >= MAX_CONENCTED_SOCKET :
+	def onMsgRecv(self, msg: str) :
+		print(f"Recieved message: {repr(msg)}")
+
+	def requestPort(self, user: User) :
+		self.sockets = [x for x in self.sockets if x.running]
+
+		for i in self.sockets :
+			if i.user == user :
+				return i
+
+		if len(self.sockets) >= MAX_CONENCTED_SOCKET :
 			return None
 
-		c = SocketClient(self.host, self.port + self.connected_num)
+		c = SocketClient(self.host, self.port + len(self.sockets), user, on_msg=self.onMsgRecv)
 
-		self.connected_num += 1
+		self.sockets.append(c)
+
+		return c
 
 	def awaitSockets(self) :
 		while self.running :
 			pass
 
 		for i in self.sockets :
+			print(f"Stopping {repr(i.name)}")
 			i.stop()
 			i.join()
 
 	def stop(self) :
 		self.running = False
+
+def getWebsocket(req: MyServer) :
+	tkn = req.getToken()
+
+	if not tkn :
+		return Response.Unauthorized()
+
+	user = tkn.user
+
+	socket = socketServer.requestPort(user)
+
+	if not socket :
+		return Response.BadRequest().setType("application/json").write('{"success": false}')
+
+	return Response.Success().setType("application/json").write(f'{{"success": true, "port": {socket.port}}}')
 
 if __name__ == "__main__":
 	print("Loading users...")
@@ -579,15 +715,18 @@ if __name__ == "__main__":
 	print("Web server started http://%s:%s" % (hostName, serverPort))
 	socketServer = SocketServer(SOCKET_HOST, SOCKET_PORT)
 	socketServer.start()
-	print("Socekt server started http://%s:%s" % (SOCKET_HOST, SOCKET_PORT))
+	print("Socket server started http://%s:%s" % (SOCKET_HOST, SOCKET_PORT))
 
 	exposeFileGet("client/homepage.html", override_path="/login")
 	exposeFileGet("client/homepage.js", override_path="/homepage.js", override_type="text/javascript")
 	exposeFileGet("client/homepage.css", override_path="/homepage.css", override_type="text/css")
 
 	exposeFileGet("client/personal.html", override_path="/", required_perms=[TokenPermissions.AccessPrivate], fallback="/login")
+	exposeFileGet("client/personal.js", override_path="/personal.js", required_perms=[TokenPermissions.AccessPrivate], override_type="text/javascript")
 
 	exposeFuncGet("/user/:username", profilePage)
+
+	exposeFuncGet("/ws", getWebsocket, required_perms=[TokenPermissions.AccessPrivate])
 
 	exposeFuncPost("/register", registerUser)
 	exposeFuncPost("/login", loginUser)
