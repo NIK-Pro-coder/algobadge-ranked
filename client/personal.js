@@ -9,7 +9,7 @@ async function main() {
 
 	let port = json.port;
 
-	const socket = new WebSocket("ws://localhost:9090");
+	const socket = new WebSocket(`ws://${location.hostname}:${port}`);
 
 	// Connection opened
 	socket.addEventListener("open", (event) => {
@@ -23,3 +23,11 @@ async function main() {
 }
 
 main();
+
+async function logout() {
+	let _ = await fetch("/logout", {
+		method: "POST",
+	});
+
+	window.location.reload();
+}

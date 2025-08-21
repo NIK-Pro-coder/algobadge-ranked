@@ -148,11 +148,20 @@ class Token :
 		self.string = getTokenString()
 		self.user = user
 
+		self.valid = True
+
 		activeTokens.append(self)
+
+	def invalidate(self) :
+		self.valid = False
 
 	@property
 	def isExpired(self) :
 		return time.time() > self.expiresAt
+
+	@property
+	def isValid(self) :
+		return not self.isExpired and self.valid
 
 	def hasPermission(self, perm: TokenPermissions) :
 		return perm in self.permissions
@@ -209,7 +218,7 @@ class MyServer(BaseHTTPRequestHandler):
 
 		return body
 
-	def getToken(self) :
+	def getToken(self) -> None | Token :
 		for i in self.headers :
 			if i == "Cookie" :
 				c = self.headers[i]
@@ -265,7 +274,7 @@ class MyServer(BaseHTTPRequestHandler):
 		token = self.getToken()
 
 		info = paths[path]
-		hasAccess = len(info.perms) == 0 or (token != None and all(token.hasPermission(x) for x in info.perms))
+		hasAccess = len(info.perms) == 0 or (token != None and all(token.hasPermission(x) for x in info.perms) and token.isValid)
 
 		if not hasAccess :
 			if info.fallback :
@@ -330,6 +339,9 @@ def registerUser(req: MyServer) -> Response :
 
 	if not "pass" in body or body["pass"] == "" :
 		return Response.BadRequest().write("Missing password")
+
+	if not body["uname"].isalpha() :
+		return Response.BadRequest().write("Invalid username")
 
 	for i in users :
 		if i.name == body["uname"] :
@@ -580,6 +592,8 @@ class SocketClient(Thread) :
 		self.host = host
 		self.port = port
 
+		print(f"Client socket started on ws://{self.host}:{self.port}")
+
 		self.running = True
 
 		self.recvThread: Thread | None = None
@@ -701,6 +715,27 @@ def getWebsocket(req: MyServer) :
 
 	return Response.Success().setType("application/json").write(f'{{"success": true, "port": {socket.port}}}')
 
+def logoutUser(req: MyServer) :
+	token = req.getToken()
+
+	if token :
+		token.invalidate()
+
+	return Response.Success()
+
+def personalPage(req: MyServer) :
+	token = req.getToken()
+
+	if not token :
+		return Response.Unauthorized()
+
+	with open("client/personal.html") as f :
+		content = fillTemplate(f.read(), {
+			"user": token.user.dumpPublicInfo()
+		})
+
+	return Response.Success().write(content)
+
 if __name__ == "__main__":
 	print("Loading users...")
 
@@ -721,7 +756,7 @@ if __name__ == "__main__":
 	exposeFileGet("client/homepage.js", override_path="/homepage.js", override_type="text/javascript")
 	exposeFileGet("client/homepage.css", override_path="/homepage.css", override_type="text/css")
 
-	exposeFileGet("client/personal.html", override_path="/", required_perms=[TokenPermissions.AccessPrivate], fallback="/login")
+	exposeFuncGet("/", personalPage, required_perms=[TokenPermissions.AccessPrivate], fallback="/login")
 	exposeFileGet("client/personal.js", override_path="/personal.js", required_perms=[TokenPermissions.AccessPrivate], override_type="text/javascript")
 
 	exposeFuncGet("/user/:username", profilePage)
@@ -730,6 +765,7 @@ if __name__ == "__main__":
 
 	exposeFuncPost("/register", registerUser)
 	exposeFuncPost("/login", loginUser)
+	exposeFuncPost("/logout", logoutUser)
 
 	try:
 		webServer.serve_forever()
