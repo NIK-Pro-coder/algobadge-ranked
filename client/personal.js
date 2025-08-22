@@ -1,3 +1,19 @@
+function sendSocketMsg(msg) {
+	socket.send(JSON.stringify(msg));
+}
+
+function handleMessage(msg) {
+	console.log(`Recieved message: ${JSON.stringify(msg, null, 2)}`);
+
+	if (msg.type === "ping") {
+		sendSocketMsg({
+			type: "pong",
+		});
+	}
+}
+
+let socket;
+
 async function main() {
 	let data = await fetch("/ws");
 	let json = await data.json();
@@ -9,7 +25,9 @@ async function main() {
 
 	let port = json.port;
 
-	const socket = new WebSocket(`ws://${location.hostname}:${port}`);
+	socket = new WebSocket(`ws://${location.hostname}:${port}`);
+
+	console.log(socket);
 
 	// Connection opened
 	socket.addEventListener("open", (event) => {
@@ -18,7 +36,16 @@ async function main() {
 
 	// Listen for messages
 	socket.addEventListener("message", (event) => {
-		console.log("Message from server ", event.data);
+		let msg = JSON.parse(event.data);
+		handleMessage(msg);
+	});
+
+	let matchmakingButton = document.getElementById("matchmaking");
+
+	matchmakingButton.addEventListener("click", () => {
+		sendSocketMsg({
+			type: "startMatchmaking",
+		});
 	});
 }
 

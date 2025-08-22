@@ -37,6 +37,11 @@ SOCKET_HOST = "0.0.0.0"
 SOCKET_PORT = 9090
 MAX_CONENCTED_SOCKET = 1000
 
+## Lobby Stuff
+MAX_LOBBIES = 500
+LOBBY_CODE_LEN = 6
+LOBBY_CODE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
 class Response:
 	def __init__(self) -> None:
 		self.status_code: int = -1
@@ -576,7 +581,7 @@ def send_ws_frame(conn, message):
     conn.send(frame)
 
 class SocketClient(Thread) :
-	def __init__(self, host: str, port: int, user: User, *, on_msg: Callable[[str], None]) -> None:
+	def __init__(self, host: str, port: int, user: User, *, on_msg: Callable[[dict], None]) -> None:
 		super().__init__(
 			target=self.getConnection
 		)
@@ -595,6 +600,7 @@ class SocketClient(Thread) :
 		print(f"Client socket started on ws://{self.host}:{self.port}")
 
 		self.running = True
+		self.responded_to_ping = True
 
 		self.recvThread: Thread | None = None
 		self.sendThread: Thread | None = None
@@ -605,7 +611,7 @@ class SocketClient(Thread) :
 		self.send_queue.append(msg)
 
 	def sendMsgThread(self, conn: socket.socket) :
-		while self.running :
+		while self.running or len(self.send_queue) > 0 :
 			if len(self.send_queue) == 0 :
 				continue
 
@@ -615,7 +621,12 @@ class SocketClient(Thread) :
 
 	def recvMsgThread(self, conn: socket.socket) :
 		while self.running :
-			self.on_msg(recv_ws_frame(conn))
+			msg = json.loads(recv_ws_frame(conn))
+
+			if msg["type"] == "pong" :
+				self.responded_to_ping = True
+
+			self.on_msg(msg)
 
 	def getConnection(self) :
 		print("Started new websocket")
@@ -646,7 +657,18 @@ class SocketClient(Thread) :
 			self.sendThread = Thread(target=self.sendMsgThread, args=(conn,))
 			self.sendThread.start()
 
+			while self.running :
+				time.sleep(1)
+				if not self.responded_to_ping :
+					self.stop()
+					return
+
+				self.send('{"type": "ping"}')
+				self.responded_to_ping = False
+
 	def stop(self) :
+		self.send('{"type": "close"}')
+
 		self.running = False
 
 		if self.connection : self.connection.close()
@@ -669,7 +691,10 @@ class SocketServer(Thread) :
 
 		self.running = True
 
-	def onMsgRecv(self, msg: str) :
+	def onMsgRecv(self, msg: dict) :
+		if msg["type"] == "pong" :
+			return
+
 		print(f"Recieved message: {repr(msg)}")
 
 	def requestPort(self, user: User) :
