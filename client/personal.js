@@ -3,31 +3,65 @@ function sendSocketMsg(msg) {
 }
 
 function handleMessage(msg) {
-	console.log(`Recieved message: ${JSON.stringify(msg, null, 2)}`);
-
 	if (msg.type === "ping") {
 		sendSocketMsg({
 			type: "pong",
 		});
+
+		return;
+	}
+
+	console.log(`Recieved message: ${JSON.stringify(msg, null, 2)}`);
+
+	if (msg.type === "close") {
+		console.log("Closing");
+
+		socket.close();
+
+		return;
 	}
 }
 
 let socket;
 
-async function main() {
+async function attemptConnection() {
 	let data = await fetch("/ws");
 	let json = await data.json();
 
 	if (!json.success) {
-		console.log("womp womp");
-		return;
+		console.log("Failed to connect to SocketServer");
+		return false;
 	}
 
 	let port = json.port;
 
 	socket = new WebSocket(`ws://${location.hostname}:${port}`);
 
-	console.log(socket);
+	return true;
+}
+
+async function main() {
+	let attempt = 1;
+
+	let before = document.getElementById("beforeSocket");
+	let after = document.getElementById("afterSocket");
+
+	let attemptCount = document.getElementById("attemptCount");
+
+	let done = false;
+
+	while (!done) {
+		attemptCount.innerHTML = `Attempt ${attempt}`;
+
+		// Sleep for 1000ms
+		await new Promise((r) => setTimeout(r, 1000));
+
+		done = await attemptConnection();
+		attempt += 1;
+	}
+
+	before.hidden = true;
+	after.hidden = false;
 
 	// Connection opened
 	socket.addEventListener("open", (event) => {
@@ -52,7 +86,7 @@ async function main() {
 main();
 
 async function logout() {
-	let _ = await fetch("/logout", {
+	await fetch("/logout", {
 		method: "POST",
 	});
 

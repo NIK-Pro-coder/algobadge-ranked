@@ -5,7 +5,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from mimetypes import MimeTypes
 from random import choice
 from typing import Any, Iterable
-from threading import Thread
+from threading import Thread, Event
+from queue import Queue, Empty
 
 import os
 import time
@@ -416,11 +417,11 @@ def traverseJson(obj: dict | list, path: str) :
 	return n
 
 def findNth(haystack: str, needle: str, n: int):
-    start = haystack.find(needle)
-    while start >= 0 and n > 1:
-        start = haystack.find(needle, start+1)
-        n -= 1
-    return start
+	start = haystack.find(needle)
+	while start >= 0 and n > 1:
+		start = haystack.find(needle, start+1)
+		n -= 1
+	return start
 
 def fillPattern(pattern: str, info: dict) :
 	n_pat = pattern.replace("\t", " ").replace("\n", " ")
@@ -535,148 +536,244 @@ def profilePage(req: MyServer) :
 	return Response.Success().write(content)
 
 def websocket_handshake(conn):
-    headers = conn.recv(1024).decode()
-    key = ""
-    for line in headers.split("\r\n"):
-        if line.lower().startswith("sec-websocket-key"):
-            key = line.split(":", 1)[1].strip()
-            break
-    accept_val = base64.b64encode(
-        hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()
-    ).decode()
-    response = (
-        "HTTP/1.1 101 Switching Protocols\r\n"
-        "Upgrade: websocket\r\n"
-        "Connection: Upgrade\r\n"
-        f"Sec-WebSocket-Accept: {accept_val}\r\n"
-        "\r\n"
-    )
-    conn.send(response.encode())
+	headers = conn.recv(1024).decode()
+	key = ""
+	for line in headers.split("\r\n"):
+		if line.lower().startswith("sec-websocket-key"):
+			key = line.split(":", 1)[1].strip()
+			break
+	accept_val = base64.b64encode(
+		hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()
+	).decode()
+	response = (
+		"HTTP/1.1 101 Switching Protocols\r\n"
+		"Upgrade: websocket\r\n"
+		"Connection: Upgrade\r\n"
+		f"Sec-WebSocket-Accept: {accept_val}\r\n"
+		"\r\n"
+	)
+	conn.send(response.encode())
 
-def recv_ws_frame(conn):
-    # Get first two bytes
-    b1, b2 = conn.recv(2)
-    length = b2 & 0x7F
-    if length == 126:
-        length = int.from_bytes(conn.recv(2), "big")
-    elif length == 127:
-        length = int.from_bytes(conn.recv(8), "big")
-    mask = conn.recv(4)
-    data = conn.recv(length)
-    return bytes(b ^ mask[i % 4] for i, b in enumerate(data)).decode(errors="ignore")
+def recv_exact(conn: socket.socket, n: int) -> bytes:
+	"""Receive exactly n bytes (or fewer if socket closes). Uses timeouts to allow shutdown."""
+	chunks = []
+	remaining = n
+	while remaining > 0:
+		try:
+			chunk = conn.recv(remaining)
+		except socket.timeout:
+			# allow caller's loop to observe stop flag regularly
+			continue
+		if not chunk:
+			# peer closed or socket was shutdown
+			break
+		chunks.append(chunk)
+		remaining -= len(chunk)
+	return b"".join(chunks)
+
+def recv_ws_frame(conn: socket.socket) -> str | None:
+	"""
+	Receive a single text frame from a client (masked).
+	Returns decoded text or None if the connection closed cleanly.
+	Raises on protocol errors.
+	"""
+	# first 2 bytes
+	try:
+		header = recv_exact(conn, 2)
+	except OSError:
+		return None
+	if len(header) < 2:
+		return None  # closed
+
+	b1, b2 = header[0], header[1]
+
+	fin = (b1 & 0x80) != 0
+	opcode = b1 & 0x0F
+	masked = (b2 & 0x80) != 0
+	length = b2 & 0x7F
+
+	if opcode == 0x8:
+		# close frame
+		return None
+
+	if length == 126:
+		ext = recv_exact(conn, 2)
+		if len(ext) < 2:
+			return None
+		length = int.from_bytes(ext, "big")
+	elif length == 127:
+		ext = recv_exact(conn, 8)
+		if len(ext) < 8:
+			return None
+		length = int.from_bytes(ext, "big")
+
+	mask_key = b""
+	if masked:
+		mask_key = recv_exact(conn, 4)
+		if len(mask_key) < 4:
+			return None
+
+	payload = recv_exact(conn, length)
+	if len(payload) < length:
+		return None
+
+	if masked:
+		payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+
+	try:
+		return payload.decode(errors="ignore")
+	except Exception:
+		return ""
 
 def send_ws_frame(conn, message):
-    payload = message.encode()
-    frame = bytearray([0x81])  # FIN + text
-    length = len(payload)
-    if length <= 125:
-        frame.append(length)
-    elif length <= 65535:
-        frame.append(126)
-        frame.extend(length.to_bytes(2, "big"))
-    else:
-        frame.append(127)
-        frame.extend(length.to_bytes(8, "big"))
-    frame.extend(payload)
-    conn.send(frame)
+	payload = message.encode()
+	frame = bytearray([0x81])  # FIN + text
+	length = len(payload)
+	if length <= 125:
+		frame.append(length)
+	elif length <= 65535:
+		frame.append(126)
+		frame.extend(length.to_bytes(2, "big"))
+	else:
+		frame.append(127)
+		frame.extend(length.to_bytes(8, "big"))
+	frame.extend(payload)
+	conn.send(frame)
 
-class SocketClient(Thread) :
-	def __init__(self, host: str, port: int, user: User, *, on_msg: Callable[[dict], None]) -> None:
-		super().__init__(
-			target=self.getConnection
-		)
+class SocketClient(Thread):
+	def __init__(self, host: str, port: int, user: User, *, on_msg: Callable[[dict, Any], None]) -> None:
+		super().__init__(target=self.getConnection, name=f"WSClient-{user.name}-{port}", daemon=True)
 
-		self.start()
+		self.alive = True
 
 		self.on_msg = on_msg
-
-		self.send_queue: list[str] = []
-
 		self.user = user
-
 		self.host = host
 		self.port = port
 
-		print(f"Client socket started on ws://{self.host}:{self.port}")
+		self._stop_evt = Event()
+		self._pong_ok = Event()
+		self._pong_ok.set()
 
-		self.running = True
-		self.responded_to_ping = True
+		self._send_q: Queue[str] = Queue()
 
 		self.recvThread: Thread | None = None
 		self.sendThread: Thread | None = None
-
 		self.connection: socket.socket | None = None
 
-	def send(self, msg: str) :
-		self.send_queue.append(msg)
+		print(f"Client socket started on ws://{self.host}:{self.port}")
+		self.start()
 
-	def sendMsgThread(self, conn: socket.socket) :
-		while self.running or len(self.send_queue) > 0 :
-			if len(self.send_queue) == 0 :
+	# public API
+	def send(self, msg: str) -> None:
+		self._send_q.put(msg)
+
+	# threads
+	def sendMsgThread(self, conn: socket.socket):
+		while not self._stop_evt.is_set() or not self._send_q.empty():
+			try:
+				m = self._send_q.get(timeout=0.2)
+			except Empty:
+				continue
+			try:
+				send_ws_frame(conn, m)
+			except (BrokenPipeError, OSError):
+				break
+
+	def recvMsgThread(self, conn: socket.socket):
+		while not self._stop_evt.is_set():
+			try:
+				msg_txt = recv_ws_frame(conn)
+			except (OSError, ValueError, json.JSONDecodeError):
+				break
+			if msg_txt is None:
+				# close frame or connection ended
+				break
+			try:
+				msg = json.loads(msg_txt)
+			except json.JSONDecodeError:
 				continue
 
-			m = self.send_queue.pop(0)
+			if msg.get("type") == "pong":
+				self._pong_ok.set()
+			else:
+				self.on_msg(msg, self)
 
-			send_ws_frame(conn, m)
-
-	def recvMsgThread(self, conn: socket.socket) :
-		while self.running :
-			msg = json.loads(recv_ws_frame(conn))
-
-			if msg["type"] == "pong" :
-				self.responded_to_ping = True
-
-			self.on_msg(msg)
-
-	def getConnection(self) :
-		print("Started new websocket")
-
+	def getConnection(self):
+		print("Started new websocket listener")
 		with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+			s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 			s.bind((self.host, self.port))
 			s.listen()
 			s.settimeout(5)
 
-			try :
+			try:
 				conn, addr = s.accept()
-			except socket.timeout :
+			except socket.timeout:
 				print("Socket timed out!")
 				self.stop()
 				return
 
-			print(f"Connected to {repr(addr)}")
+		# move connection out of the context manager so it isn't auto-closed
+		self.connection = conn
+		self.connection.settimeout(0.5)  # critical: let recv loop check stop flag
+		print(f"Connected to {repr(addr)}")
+		websocket_handshake(self.connection)
 
-			websocket_handshake(conn)
+		# start workers
+		self.recvThread = Thread(target=self.recvMsgThread, args=(self.connection,),
+								 name=f"WS-Recv-{self.user.name}-{self.port}", daemon=True)
+		self.recvThread.start()
 
-			self.connection = conn
+		self.sendThread = Thread(target=self.sendMsgThread, args=(self.connection,),
+								 name=f"WS-Send-{self.user.name}-{self.port}", daemon=True)
+		self.sendThread.start()
 
-			print("Start recvThread")
-			self.recvThread = Thread(target=self.recvMsgThread, args=(conn,))
-			self.recvThread.start()
-
-			print("Start sendThread")
-			self.sendThread = Thread(target=self.sendMsgThread, args=(conn,))
-			self.sendThread.start()
-
-			while self.running :
-				time.sleep(1)
-				if not self.responded_to_ping :
-					self.stop()
-					return
-
+		# keepalive ping loop
+		while not self._stop_evt.is_set():
+			if not self._pong_ok.wait(timeout=2.0):
+				# didn't receive pong in time -> stop
+				self.stop()
+				break
+			try:
 				self.send('{"type": "ping"}')
-				self.responded_to_ping = False
+			except Exception:
+				self.stop()
+				break
+			self._pong_ok.clear()
+			time.sleep(0.1)
 
-	def stop(self) :
-		self.send('{"type": "close"}')
+	def stop(self):
+		if self._stop_evt.is_set():
+			return
+		self._stop_evt.set()
+		# try to notify peer
+		try:
+			self._send_q.put_nowait('{"type": "close"}')
+		except Exception:
+			pass
 
-		self.running = False
+		# force-unblock any waiting recv with shutdown()
+		print("Shutting down connection")
+		if self.connection:
+			try:
+				self.connection.shutdown(socket.SHUT_RDWR)
+			except OSError:
+				pass
+			try:
+				self.connection.close()
+			except OSError:
+				pass
 
-		if self.connection : self.connection.close()
+		# join subthreads if they exist
+		if self.sendThread:
+			print(f"Shutting down {self.sendThread.name}")
+			self.sendThread.join(timeout=2.0)
+		if self.recvThread:
+			print(f"Shutting down {self.recvThread.name}")
+			self.recvThread.join(timeout=2.0)
 
-		print("Stopping send subthread")
-		if self.sendThread : self.sendThread.join()
-		print("Stopping recv subthread")
-		if self.recvThread : self.recvThread.join()
+		print(f"{self.name} closed correctly")
 
 class SocketServer(Thread) :
 	def __init__(self, host: str, port: int) -> None:
@@ -691,18 +788,30 @@ class SocketServer(Thread) :
 
 		self.running = True
 
-	def onMsgRecv(self, msg: dict) :
+	def sendToUser(self, msg: str, user: User) :
+		for i in self.sockets :
+			if i.user == user :
+				i.send(msg)
+				return
+
+	def sendToUserMultiple(self, msg: str, users: list[User]) :
+		for i in users :
+			self.sendToUser(msg, i)
+
+	def sendToAll(self, msg: str) :
+		for i in self.sockets :
+			i.send(msg)
+
+	def onMsgRecv(self, msg: dict, sender: SocketClient) :
 		if msg["type"] == "pong" :
 			return
 
-		print(f"Recieved message: {repr(msg)}")
+		print(f"Recieved message from {sender.name}: {repr(msg)}")
 
 	def requestPort(self, user: User) :
-		self.sockets = [x for x in self.sockets if x.running]
-
 		for i in self.sockets :
-			if i.user == user :
-				return i
+			if i.user == user and not i._stop_evt.is_set() :
+				return None
 
 		if len(self.sockets) >= MAX_CONENCTED_SOCKET :
 			return None
@@ -728,8 +837,8 @@ class SocketServer(Thread) :
 def getWebsocket(req: MyServer) :
 	tkn = req.getToken()
 
-	if not tkn :
-		return Response.Unauthorized()
+	if not tkn or not tkn.hasPermission(TokenPermissions.AccessPrivate) :
+		return Response.Unauthorized().setType("application/json").write('{"success": false}')
 
 	user = tkn.user
 
@@ -761,6 +870,12 @@ def personalPage(req: MyServer) :
 
 	return Response.Success().write(content)
 
+class Lobby:
+	def __init__(self) -> None:
+		self.max_players = 2
+
+		self.players: list[User] = []
+
 if __name__ == "__main__":
 	print("Loading users...")
 
@@ -786,7 +901,7 @@ if __name__ == "__main__":
 
 	exposeFuncGet("/user/:username", profilePage)
 
-	exposeFuncGet("/ws", getWebsocket, required_perms=[TokenPermissions.AccessPrivate])
+	exposeFuncGet("/ws", getWebsocket)
 
 	exposeFuncPost("/register", registerUser)
 	exposeFuncPost("/login", loginUser)
