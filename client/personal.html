@@ -1,8 +1,13 @@
 <html>
+	<head>
+		<link rel="stylesheet" href="personal.css" />
+	</head>
 	<body>
 		<div id="beforeSocket">
 			<h3>Attempting connection...</h3>
 			<p id="attemptCount">Attempt 1</p>
+
+			<p>Wrong account? <a href="/login">Login</a></p>
 		</div>
 
 		<div id="afterSocket" hidden>
@@ -14,14 +19,22 @@
 		</div>
 
 		<div id="lobby" hidden>
-			<p id="lobbyCode">Code: N/A</p>
+			<p id="lobbyCode">Lobby code: N/A</p>
 
-			<p>Players:</p>
-			<div id="lobbyPlayers"></div>
+			<div id="dispPlayers">
+				<p>Players:</p>
+				<div id="lobbyPlayers"></div>
+			</div>
 
-			<div id="lobbyChat"></div>
-			<input type="text" placeholder="Type here..." id="messageText" />
-			<button id="sendMessage">Send</button>
+			<div id="chatDisp">
+				<div id="lobbyChat"></div>
+				<input
+					type="text"
+					placeholder="Type here..."
+					id="messageText"
+				/>
+				<button id="sendMessage">Send</button>
+			</div>
 		</div>
 
 		<script src="personal.js"></script>

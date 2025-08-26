@@ -836,22 +836,17 @@ class SocketServer(Thread) :
 				"code": lobby.code
 			}), sender.user)
 
-			self.sendToUser(json.dumps({
-				"type": "lobbyChat",
-				"messages": lobby.chatMessageJson
-			}), sender.user)
-
-			self.sendToUser(json.dumps({
-				"type": "lobbyPlayers",
-				"players": lobby.playersJson
-			}), sender.user)
-
 			return
 
 		if msg["type"] == "chatMsg" :
+			if msg["msg"] == "" :
+				return
+
 			for i in lobbies :
 				if sender.user in i.players :
 					i.sendMessage(msg["msg"], sender.user)
+
+			return
 
 	def requestPort(self, user: User) :
 		for i in self.sockets :
@@ -944,13 +939,13 @@ class Gamemode :
 		self.points_to_win: int = 10
 
 class ChatMessage :
-	def __init__(self, user: User, msg: str) -> None:
-		self.user: User = user
+	def __init__(self, user: User | None, msg: str) -> None:
+		self.user = user
 		self.msg: str = msg
 
 	def dumpJson(self) :
 		return {
-			"user": self.user.display,
+			"user": self.user.display if self.user else None,
 			"msg": self.msg
 		}
 
@@ -973,7 +968,7 @@ class Lobby:
 
 		lobbies.append(self)
 
-	def sendMessage(self, msg: str, sender: User) :
+	def sendMessage(self, msg: str, sender: User | None) :
 		c = ChatMessage(sender, escape(msg))
 
 		self.chat.append(c)
@@ -1000,6 +995,8 @@ class Lobby:
 			return False
 
 		self.players.append(user)
+
+		self.sendMessage(f"{user.display} joined the lobby!", None)
 
 		socketServer.sendToUserMultiple(json.dumps({
 			"type": "lobbyPlayers",
@@ -1040,6 +1037,7 @@ if __name__ == "__main__":
 
 	exposeFuncGet("/", personalPage, required_perms=[TokenPermissions.AccessPrivate], fallback="/login")
 	exposeFileGet("client/personal.js", override_path="/personal.js", required_perms=[TokenPermissions.AccessPrivate], override_type="text/javascript")
+	exposeFileGet("client/personal.css", override_path="/personal.css", required_perms=[TokenPermissions.AccessPrivate], override_type="text/css")
 
 	exposeFuncGet("/user/:username", profilePage)
 

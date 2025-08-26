@@ -23,7 +23,7 @@ function handleMessage(msg) {
 
 	if (msg.type === "lobbyCode") {
 		let p = document.getElementById("lobbyCode");
-		p.innerHTML = `Code: ${msg.code}`;
+		p.innerHTML = `Lobby code: ${msg.code}`;
 
 		return;
 	}
@@ -46,7 +46,11 @@ function handleMessage(msg) {
 		for (let i = 0; i < msg.messages.length; i++) {
 			let m = msg.messages[i];
 
-			p.innerHTML += `<p><strong>${m.user}</strong> ${m.msg}</p>`;
+			if (m.user) {
+				p.innerHTML += `<p><strong>${m.user}</strong> ${m.msg}</p>`;
+			} else {
+				p.innerHTML += `<p><strong>${m.msg}</strong></p>`;
+			}
 		}
 
 		return;
