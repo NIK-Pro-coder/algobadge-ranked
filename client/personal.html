@@ -4,12 +4,24 @@
 			<h3>Attempting connection...</h3>
 			<p id="attemptCount">Attempt 1</p>
 		</div>
+
 		<div id="afterSocket" hidden>
 			<button onclick="logout()">Logout</button>
 
 			<p>Welcome <strong>${user.name}</strong></p>
 
 			<button id="matchmaking">Start Matchmaking</button>
+		</div>
+
+		<div id="lobby" hidden>
+			<p id="lobbyCode">Code: N/A</p>
+
+			<p>Players:</p>
+			<div id="lobbyPlayers"></div>
+
+			<div id="lobbyChat"></div>
+			<input type="text" placeholder="Type here..." id="messageText" />
+			<button id="sendMessage">Send</button>
 		</div>
 
 		<script src="personal.js"></script>

@@ -20,6 +20,37 @@ function handleMessage(msg) {
 
 		return;
 	}
+
+	if (msg.type === "lobbyCode") {
+		let p = document.getElementById("lobbyCode");
+		p.innerHTML = `Code: ${msg.code}`;
+
+		return;
+	}
+
+	if (msg.type === "lobbyPlayers") {
+		let p = document.getElementById("lobbyPlayers");
+		p.innerHTML = "";
+
+		for (let i = 0; i < msg.players.length; i++) {
+			p.innerHTML += `<p>${msg.players[i]}</p>`;
+		}
+
+		return;
+	}
+
+	if (msg.type === "lobbyChat") {
+		let p = document.getElementById("lobbyChat");
+		p.innerHTML = "";
+
+		for (let i = 0; i < msg.messages.length; i++) {
+			let m = msg.messages[i];
+
+			p.innerHTML += `<p><strong>${m.user}</strong> ${m.msg}</p>`;
+		}
+
+		return;
+	}
 }
 
 let socket;
@@ -45,6 +76,7 @@ async function main() {
 
 	let before = document.getElementById("beforeSocket");
 	let after = document.getElementById("afterSocket");
+	let lobby = document.getElementById("lobby");
 
 	let attemptCount = document.getElementById("attemptCount");
 
@@ -80,6 +112,22 @@ async function main() {
 		sendSocketMsg({
 			type: "startMatchmaking",
 		});
+
+		lobby.hidden = false;
+		after.hidden = true;
+	});
+
+	let chatSendButton = document.getElementById("sendMessage");
+
+	chatSendButton.addEventListener("click", () => {
+		let msg = document.getElementById("messageText");
+
+		sendSocketMsg({
+			type: "chatMsg",
+			msg: msg.value,
+		});
+
+		msg.value = "";
 	});
 }
 

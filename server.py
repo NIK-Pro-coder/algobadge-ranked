@@ -7,6 +7,7 @@ from random import choice
 from typing import Any, Iterable
 from threading import Thread, Event
 from queue import Queue, Empty
+from html import escape
 
 import os
 import time
@@ -23,8 +24,8 @@ serverPort = 8080
 
 ## Cookie Stuff
 EXPIRYTIME = 60 * 60 * 24 * 7 * 3 # 3 weeks in seconds
-ALLOWEDCHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-STRINGLEN = 10
+COOKIE_ALLOWED_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+COOKIE_LENGTH = 10
 
 ## Passwords
 SALT_STR = os.getenv("SALT")
@@ -39,9 +40,9 @@ SOCKET_PORT = 9090
 MAX_CONENCTED_SOCKET = 1000
 
 ## Lobby Stuff
-MAX_LOBBIES = 500
 LOBBY_CODE_LEN = 6
 LOBBY_CODE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+MAX_RANK_DIFFERENCE = 50
 
 class Response:
 	def __init__(self) -> None:
@@ -92,7 +93,7 @@ class TokenPermissions(Enum) :
 	AccessPrivate = 0
 
 def getTokenString() :
-	s = "".join(choice(ALLOWEDCHARS) for _ in range(STRINGLEN))
+	s = "".join(choice(COOKIE_ALLOWED_CHARS) for _ in range(COOKIE_LENGTH))
 
 	if any(x.string == s for x in activeTokens) :
 		return getTokenString()
@@ -132,12 +133,12 @@ class User :
 		}
 
 	def loadJson(self, json: dict) :
-		self.name = json["name"]
-		self.display = json["display"]
-		self.passw = json["passw"]
-		self.uid = json["uid"]
-		self.points = json["points"]
-		self.rank = [x for x in Ranks if x.name == json["rank"]][0]
+		self.name: str = json["name"]
+		self.display: str = json["display"]
+		self.passw: str = json["passw"]
+		self.uid: int = json["uid"]
+		self.points: int = json["points"]
+		self.rank: Ranks = [x for x in Ranks if x.name == json["rank"]][0]
 
 	def dumpPublicInfo(self) :
 		return {
@@ -775,6 +776,25 @@ class SocketClient(Thread):
 
 		print(f"{self.name} closed correctly")
 
+def attempJoinLobby(user: User) :
+	lobbies.sort(key = lambda x: abs(user.points - x.avgPlayerPoints))
+
+	for lobby in lobbies :
+		if abs(user.points - lobby.avgPlayerPoints) > MAX_RANK_DIFFERENCE :
+			break
+
+		joined = lobby.attempJoin(user)
+
+		if not joined :
+			break
+
+		return lobby
+
+	l = Lobby(Gamemode()) # Create new lobby
+	l.attempJoin(user) # Should always succeed
+
+	return l
+
 class SocketServer(Thread) :
 	def __init__(self, host: str, port: int) -> None:
 		super().__init__(
@@ -807,6 +827,31 @@ class SocketServer(Thread) :
 			return
 
 		print(f"Recieved message from {sender.name}: {repr(msg)}")
+
+		if msg["type"] == "startMatchmaking" :
+			lobby = attempJoinLobby(sender.user)
+
+			self.sendToUser(json.dumps({
+				"type": "lobbyCode",
+				"code": lobby.code
+			}), sender.user)
+
+			self.sendToUser(json.dumps({
+				"type": "lobbyChat",
+				"messages": lobby.chatMessageJson
+			}), sender.user)
+
+			self.sendToUser(json.dumps({
+				"type": "lobbyPlayers",
+				"players": lobby.playersJson
+			}), sender.user)
+
+			return
+
+		if msg["type"] == "chatMsg" :
+			for i in lobbies :
+				if sender.user in i.players :
+					i.sendMessage(msg["msg"], sender.user)
 
 	def requestPort(self, user: User) :
 		for i in self.sockets :
@@ -870,11 +915,106 @@ def personalPage(req: MyServer) :
 
 	return Response.Success().write(content)
 
-class Lobby:
-	def __init__(self) -> None:
-		self.max_players = 2
+class TournamentSelectionMethod(Enum) :
+	RankBased = 0
+	RoundRobbin = 1
 
+class GamemodeModifiers(Enum) :
+	NoModifier = 0
+	Knockout = 1 # Worst player will be eliminated until whole team is eliminated
+	Points = 2 # The best performance scores a point first to 10 (default) wins
+
+class Gamemode :
+	def __init__(self) -> None:
+		## Player Info
+		self.player_num: int = 2
+		self.team_size: int = 1
+
+		## Round Info
+		self.round_num: int = 1
+		self.round_duration_minutes: int = 10
+
+		## Tournament Info
+		self.is_tournament: bool = False
+		self.has_loser_bracket: bool = False
+		self.selection_method: TournamentSelectionMethod = TournamentSelectionMethod.RankBased
+
+		## Modifier Info
+		self.modifier: GamemodeModifiers = GamemodeModifiers.NoModifier
+		self.points_to_win: int = 10
+
+class ChatMessage :
+	def __init__(self, user: User, msg: str) -> None:
+		self.user: User = user
+		self.msg: str = msg
+
+	def dumpJson(self) :
+		return {
+			"user": self.user.display,
+			"msg": self.msg
+		}
+
+def getRandomLobbyCode() -> str :
+	s = "".join(choice(LOBBY_CODE_CHARS) for _ in range(LOBBY_CODE_LEN))
+
+	if any(x.code == s for x in lobbies) :
+		return getRandomLobbyCode()
+
+	return s
+
+class Lobby:
+	def __init__(self, gamemode: Gamemode) -> None:
 		self.players: list[User] = []
+		self.gamemode: Gamemode = gamemode
+
+		self.chat: list[ChatMessage] = []
+
+		self.code = getRandomLobbyCode()
+
+		lobbies.append(self)
+
+	def sendMessage(self, msg: str, sender: User) :
+		c = ChatMessage(sender, escape(msg))
+
+		self.chat.append(c)
+
+		socketServer.sendToUserMultiple(json.dumps({
+			"type": "lobbyChat",
+			"messages": self.chatMessageJson
+		}), self.players)
+
+	@property
+	def chatMessageJson(self) :
+		return [
+			x.dumpJson() for x in self.chat
+		]
+
+	@property
+	def playersJson(self) :
+		return [
+			x.name for x in self.players
+		]
+
+	def attempJoin(self, user: User) :
+		if len(self.players) >= self.gamemode.player_num :
+			return False
+
+		self.players.append(user)
+
+		socketServer.sendToUserMultiple(json.dumps({
+			"type": "lobbyPlayers",
+			"players": self.playersJson
+		}), self.players)
+
+		return True
+
+	@property
+	def avgPlayerPoints(self) :
+		return sum(x.points for x in self.players) / len(self.players)
+
+	@property
+	def minMaxPlayerPoints(self) :
+		return (min(x.points for x in self.players), max(x.points for x in self.players))
 
 if __name__ == "__main__":
 	print("Loading users...")
@@ -885,6 +1025,8 @@ if __name__ == "__main__":
 	for i in temp_users :
 		u = User("", "") # Temporary user
 		u.loadJson(i)
+
+	lobbies: list[Lobby] = []
 
 	webServer = HTTPServer((hostName, serverPort), MyServer)
 	print("Web server started http://%s:%s" % (hostName, serverPort))
