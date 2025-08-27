@@ -11,7 +11,7 @@ function handleMessage(msg) {
 		return;
 	}
 
-	console.log(`Recieved message: ${JSON.stringify(msg, null, 2)}`);
+	console.log(msg);
 
 	if (msg.type === "close") {
 		console.log("Closing");
@@ -33,7 +33,7 @@ function handleMessage(msg) {
 		p.innerHTML = "";
 
 		for (let i = 0; i < msg.players.length; i++) {
-			p.innerHTML += `<p>${msg.players[i]}</p>`;
+			p.innerHTML += `<code>${msg.players[i]}</code>`;
 		}
 
 		return;
@@ -54,6 +54,34 @@ function handleMessage(msg) {
 		}
 
 		return;
+	}
+
+	if (msg.type == "lobbyGamemode") {
+		let p = document.getElementById("lobbyGamemode");
+		p.innerHTML = "";
+
+		for (let [k, v] of Object.entries(msg.gamemode)) {
+			if (k === "team_size" && v === 1) {
+				continue;
+			}
+
+			if (
+				msg.gamemode.tournament === false &&
+				(k === "loser_bracket" || k === "selection")
+			) {
+				continue;
+			}
+
+			if (k === "modifier" && v === "NoModifier") {
+				continue;
+			}
+
+			if (k === "points" && msg.gamemode.modifier !== "Points") {
+				continue;
+			}
+
+			p.innerHTML += `<p><strong>${k}: </strong>${v}</p>`;
+		}
 	}
 }
 

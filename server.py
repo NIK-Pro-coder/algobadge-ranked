@@ -790,7 +790,7 @@ def attempJoinLobby(user: User) :
 
 		return lobby
 
-	l = Lobby(Gamemode()) # Create new lobby
+	l = Lobby(user) # Create new lobby & set user as creator
 	l.attempJoin(user) # Should always succeed
 
 	return l
@@ -938,6 +938,19 @@ class Gamemode :
 		self.modifier: GamemodeModifiers = GamemodeModifiers.NoModifier
 		self.points_to_win: int = 10
 
+	def dumpInfo(self) :
+		return {
+			"players": self.player_num,
+			"team_size": self.team_size,
+			"round_num": self.round_num,
+			"round_duration": self.round_duration_minutes,
+			"tournament": self.is_tournament,
+			"loser_bracket": self.has_loser_bracket,
+			"selection": self.selection_method.name,
+			"modifier": self.modifier.name,
+			"points": self.points_to_win
+		}
+
 class ChatMessage :
 	def __init__(self, user: User | None, msg: str) -> None:
 		self.user = user
@@ -958,9 +971,11 @@ def getRandomLobbyCode() -> str :
 	return s
 
 class Lobby:
-	def __init__(self, gamemode: Gamemode) -> None:
+	def __init__(self, creator: User) -> None:
 		self.players: list[User] = []
-		self.gamemode: Gamemode = gamemode
+		self.gamemode: Gamemode = Gamemode()
+
+		self.creator = creator
 
 		self.chat: list[ChatMessage] = []
 
@@ -976,6 +991,17 @@ class Lobby:
 		socketServer.sendToUserMultiple(json.dumps({
 			"type": "lobbyChat",
 			"messages": self.chatMessageJson
+		}), self.players)
+
+	def sendSystemMessage(self, msg: str) :
+		self.sendMessage(msg, None)
+
+	def setGameMode(self, gamemode: Gamemode) :
+		self.gamemode = gamemode
+
+		socketServer.sendToUserMultiple(json.dumps({
+			"type": "lobbyGamemode",
+			"gamemode": self.gamemode.dumpInfo()
 		}), self.players)
 
 	@property
@@ -996,11 +1022,16 @@ class Lobby:
 
 		self.players.append(user)
 
-		self.sendMessage(f"{user.display} joined the lobby!", None)
+		self.sendSystemMessage(f"{user.display} joined the lobby!")
 
 		socketServer.sendToUserMultiple(json.dumps({
 			"type": "lobbyPlayers",
 			"players": self.playersJson
+		}), self.players)
+
+		socketServer.sendToUserMultiple(json.dumps({
+			"type": "lobbyGamemode",
+			"gamemode": self.gamemode.dumpInfo()
 		}), self.players)
 
 		return True
